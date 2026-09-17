@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/fx"
@@ -14,9 +15,48 @@ import (
 )
 
 // NewEngine builds the gin engine used to serve every route in the app.
-func NewEngine() *gin.Engine {
+// gin.New() (unlike gin.Default()) attaches no middleware, so request
+// logging and panic recovery are wired up explicitly here using zap, to
+// stay consistent with the structured logging used everywhere else.
+func NewEngine(logger *zap.Logger) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
-	return gin.New()
+
+	engine := gin.New()
+	engine.Use(recoveryMiddleware(logger), loggingMiddleware(logger))
+	return engine
+}
+
+func loggingMiddleware(logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+
+		c.Next()
+
+		logger.Info("http request",
+			zap.String("method", c.Request.Method),
+			zap.String("path", path),
+			zap.Int("status", c.Writer.Status()),
+			zap.String("client_ip", c.ClientIP()),
+			zap.Duration("latency", time.Since(start)),
+		)
+	}
+}
+
+func recoveryMiddleware(logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		defer func() {
+			if err := recover(); err != nil {
+				logger.Error("panic recovered",
+					zap.Any("error", err),
+					zap.String("method", c.Request.Method),
+					zap.String("path", c.Request.URL.Path),
+				)
+				c.AbortWithStatus(http.StatusInternalServerError)
+			}
+		}()
+		c.Next()
+	}
 }
 
 // NewHTTPServer wraps the gin engine in an http.Server whose lifecycle is
