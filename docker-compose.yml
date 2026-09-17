@@ -1,4 +1,20 @@
 services:
+  migrate:
+    build: .
+    entrypoint: ["/migrate"]
+    command: ["up"]
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: jungle
+      POSTGRES_PASSWORD: jungle
+      POSTGRES_DB: jungle
+      POSTGRES_SSLMODE: disable
+      MIGRATIONS_PATH: /migrations
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   app:
     build: .
     ports:
@@ -19,6 +35,8 @@ services:
         condition: service_healthy
       localstack:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   postgres:
     image: postgres:16-alpine

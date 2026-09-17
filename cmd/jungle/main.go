@@ -25,12 +25,8 @@ func main() {
 		postgres.Module,
 		queue.Module,
 
-		// Feature modules: each one provides its own routes/services and
-		// plugs into the graph without router or server knowing it exists.
 		health.Module,
 
-		// router.Module must come after every feature module so it sees
-		// all routes registered in the "routes" group.
 		router.Module,
 	).Run()
 }
