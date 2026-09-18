@@ -105,6 +105,9 @@ func (uc *ProcessWager) Execute(ctx context.Context, cmd ProcessWagerCommand) (P
 				return fmt.Errorf("reading inbox: %w", err)
 			}
 			if found {
+				if rec.PayloadHash != cmd.PayloadHash {
+					return ErrIdempotencyConflict
+				}
 				existing, err := repos.Transactions().GetByID(ctx, rec.WagerTransactionID)
 				if err != nil {
 					return fmt.Errorf("loading transaction for replayed message: %w", err)

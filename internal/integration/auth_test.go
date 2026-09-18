@@ -105,6 +105,28 @@ func TestAuth_RejectsMissingAndInvalidCredentials(t *testing.T) {
 	}
 }
 
+func TestAuth_ExpiredTokenIsRejected(t *testing.T) {
+	s := newTestServer(t)
+
+	token, ok := tryFetchToken(t, "provider-expiring", "provider-expiring-secret")
+	if !ok {
+		t.Skip("client provider-expiring is missing from the realm; recreate keycloak so the realm import runs again")
+	}
+
+	path := "/wagering/transactions/" + uuid.NewString()
+
+	if rec := s.do(t, http.MethodGet, path, token, nil); rec.Code == http.StatusUnauthorized {
+		t.Fatalf("the token was refused while still valid: %s", rec.Body.String())
+	}
+
+	time.Sleep(2 * time.Second)
+
+	rec := s.do(t, http.MethodGet, path, token, nil)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 after the token expired (body: %s)", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAuth_ForeignTokenIsRejected(t *testing.T) {
 	s := newTestServer(t)
 

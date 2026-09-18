@@ -6,7 +6,7 @@ As operações entram por duas portas, a API HTTP e um consumidor SQS FIFO, e as
 
 ## Subindo
 
-Precisa de Docker com Compose. Go 1.25 só é necessário se você for rodar testes ou a aplicação fora do container.
+Precisa de Docker com Compose. Go 1.25.11 (a versão do `go.mod`) só é necessário se você for rodar os testes ou a aplicação fora do container.
 
 ```bash
 docker compose up --build
@@ -37,6 +37,69 @@ curl -s http://localhost:8080/health/ready
 
 `docker compose down -v` derruba tudo e apaga os volumes.
 
+## Variáveis de ambiente
+
+Os padrões ficam em `internal/config/config.go`, que é a fonte da verdade. O `.env.example` traz os mesmos valores para rodar a aplicação no host contra os serviços do Compose, sem nenhum segredo real.
+
+| Variável | Padrão | Para que serve |
+|---|---|---|
+| `JUNGLE_PORT` | `8080` | porta do servidor HTTP |
+| `JUNGLE_INSTANCE_ID` | `<hostname>-<pid>` | identifica o processo entre as instâncias; fica gravado no claim da outbox, então dá para saber qual instância morreu segurando trabalho |
+| `POSTGRES_HOST` / `POSTGRES_PORT` | `localhost` / `5432` | endereço do banco |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `jungle` | credenciais e banco |
+| `POSTGRES_SSLMODE` | `disable` | `sslmode` da connection string |
+| `AWS_REGION` | `us-east-1` | região usada pelo SDK |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `test` / `test` | o LocalStack aceita qualquer coisa |
+| `SQS_ENDPOINT_URL` | vazio | aponta para o LocalStack em dev; vazio usa a AWS real |
+| `SQS_REQUEST_QUEUE_URL` | vazio | fila FIFO de entrada |
+| `SQS_EVENT_QUEUE_URL` | vazio | fila FIFO onde a outbox publica |
+| `SQS_CONSUMER_NAME` | `wager-transactions-consumer` | escopo da deduplicação na inbox |
+| `SQS_MAX_MESSAGES` | `10` | mensagens por `ReceiveMessage` |
+| `SQS_WAIT_TIME_SECONDS` | `10` | long polling |
+| `SQS_VISIBILITY_TIMEOUT` | `60` | visibility timeout no recebimento |
+| `OIDC_ISSUER_URL` | `http://localhost:8081/realms/jungle` | de onde vêm o discovery e as chaves |
+| `OIDC_ADDITIONAL_ISSUERS` | vazio | outras grafias aceitas do mesmo `iss`, separadas por vírgula |
+| `OIDC_AUDIENCE` | `jungle-api` | claim `aud` exigida |
+| `OIDC_DISCOVERY_TIMEOUT` | `90s` | quanto o boot insiste num issuer fora do ar |
+| `STARTUP_DEPENDENCY_TIMEOUT` | `60s` | quanto o boot insiste em Postgres ou SQS fora do ar |
+| `OUTBOX_INTERVAL` | `1s` | intervalo entre drenagens da outbox |
+| `REFERENCE_INTERVAL` | `5s` | intervalo entre tentativas das referências pendentes |
+| `SHUTDOWN_TIMEOUT` | `20s` | prazo dos workers para terminar o que está em voo |
+| `TRACING_ENABLED` | `true` | `false` instala um tracer no-op e dispensa coletor |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | endpoint OTLP/gRPC (`jaeger:4317` dentro do Compose) |
+| `OTEL_SERVICE_NAME` | `jungle` | nome do serviço no Jaeger |
+| `TRACING_SAMPLE_RATIO` | `1.0` | sampler por proporção, respeitando decisão do pai |
+| `MIGRATIONS_PATH` | `migrations` | diretório lido pelo `cmd/migrate` |
+
+O `OIDC_ADDITIONAL_ISSUERS` existe por um motivo prático: o Keycloak deriva o `iss` do host pelo qual o token foi pedido, então o mesmo realm responde `http://keycloak:8080/realms/jungle` dentro da rede do Compose e `http://localhost:8081/realms/jungle` a partir do host. As duas grafias são listadas explicitamente em vez de desligar a checagem de issuer.
+
+## Migrations
+
+SQL versionado em `migrations/`, aplicado com golang-migrate pelo `cmd/migrate`, que lê as mesmas variáveis de Postgres da aplicação.
+
+```bash
+go run ./cmd/migrate up        # aplica tudo que está pendente
+go run ./cmd/migrate down      # reverte todas
+go run ./cmd/migrate down 1    # reverte só a última
+go run ./cmd/migrate version   # versão atual e flag dirty
+```
+
+Toda migration tem par `up`/`down`, então dá para ir e voltar. Dentro do Compose isso roda sozinho: o serviço `migrate` aplica as pendentes antes do `app` subir. Para rodar na mão contra o banco do Compose, use `make migrate-up`, `make migrate-down` e `make migrate-version`.
+
+As tabelas criadas são `wallet`, `wager_transaction`, `wallet_ledger_entry`, `journal_entry`, `inbox` e `outbox`, junto com as constraints e triggers que seguram os invariantes financeiros no próprio banco.
+
+## Filas
+
+O `deploy/localstack/init-sqs.sh` roda quando o LocalStack sobe e cria quatro filas FIFO: `wager-transactions.fifo` e `wager-events.fifo`, cada uma com sua DLQ, com `VisibilityTimeout=60` e `maxReceiveCount=5`. Cada fila principal carrega uma access policy em que o provedor enfileira mas não lê, e o serviço lê mas não enfileira. O LocalStack guarda essas policies sem avaliá-las como a AWS de verdade faz.
+
+```bash
+make queues    # lista as filas e seus atributos
+
+docker compose exec localstack awslocal sqs receive-message \
+  --region us-east-1 \
+  --queue-url http://localhost:4566/000000000000/wager-transactions-dlq.fifo
+```
+
 ## Autenticação
 
 Todo endpoint de negócio exige um bearer token do Keycloak via `client_credentials`. Só os health checks e o `/metrics` são públicos. O realm é importado automaticamente com três clients:
@@ -46,6 +109,7 @@ Todo endpoint de negócio exige um bearer token do Keycloak via `client_credenti
 | `jungle-internal` | `internal-secret` | `internal-service` | abrir carteira, ler carteira e ledger, reconciliar, ler transação de qualquer provedor |
 | `provider-a` | `provider-a-secret` | `provider` | enviar e ler apenas operações de `provider-a` |
 | `provider-b` | `provider-b-secret` | `provider` | enviar e ler apenas operações de `provider-b` |
+| `provider-expiring` | `provider-expiring-secret` | `provider` | igual ao `provider-a`, mas com token de 1 segundo; existe só para o teste de credencial expirada |
 
 Emitir token é o de sempre. Uma função de conveniência, usada nos exemplos abaixo:
 
@@ -233,18 +297,91 @@ Cada réplica pega uma porta (8090, 8091, 8092) e todas dividem Postgres e SQS. 
 
 ## Testes
 
+### Sem dependência externa
+
 ```bash
-make check             # gofmt, vet e testes unitários com -race
-make deps              # só as dependências, para rodar testes no host
-make migrate-up
-make test-integration  # a suíte contra serviços reais
+go test ./...
+go test -race ./...
+go vet ./...
+gofmt -l .        # não imprime nada quando está tudo formatado
 ```
 
-Os unitários cobrem o domínio (`money`, `wallet`, `wagertx`, `journal`) e o hash de idempotência, sem depender de nada externo.
+Ou `make check`, que roda `gofmt -l`, `go vet` (com e sem a tag `integration`) e `go test -race ./...` de uma vez. Esses testes cobrem o domínio (`money`, `wallet`, `wagertx`, `journal`) e o hash de idempotência.
 
-A suíte de integração são 42 testes atrás da tag `integration`, rodando contra Postgres, LocalStack e Keycloak de verdade. Nenhum mock no lugar de infraestrutura. Ela cobre os dois cenários obrigatórios de concorrência, o consumidor interrompido entre o commit e o delete da mensagem, mensagem malformada indo para a DLQ, isolamento entre provedores com tokens reais, referência resolvida fora de ordem, publishers competindo, republicação preservando o `eventId`, os invariantes do journal e as constraints do banco recusando o que o código não consegue fazer. Tem também um teste que sobe e derruba a aplicação inteira e confere que a porta foi liberada e que nenhuma goroutine vazou.
+### Integração
 
-O CI (`.github/workflows/ci.yml`) roda em quatro jobs: checagens estáticas, unitários, a suíte de integração com serviços reais (aplicando, revertendo e reaplicando as migrations), e um job que faz `docker compose up --build` de um clone limpo e dirige um fluxo autenticado de ponta a ponta. Esse último existe para pegar o que o README não pega: se o projeto realmente sobe na mão de outra pessoa.
+A suíte usa Postgres, LocalStack e Keycloak de verdade, nunca mock no lugar de infraestrutura, e fica atrás da tag `integration` para não rodar por acidente. Primeiro prepare as dependências:
+
+```bash
+docker compose up -d postgres localstack keycloak
+go run ./cmd/migrate up
+```
+
+Depois:
+
+```bash
+go test -tags=integration -race -count=1 ./internal/integration/...
+go test -tags=integration -count=1 ./cmd/jungle/...
+```
+
+`make deps` e `make test-integration` fazem exatamente isso, já com as variáveis de ambiente preenchidas. Note o `-count=1`: sem ele o Go devolve resultado em cache e você acha que rodou.
+
+São 47 testes. Os dois cenários obrigatórios de concorrência (duas apostas de 80 sobre saldo de 100, e a mesma aposta enviada 50 vezes em paralelo) rodam contra três instâncias independentes compartilhando o mesmo banco. O resto cobre consumidor interrompido entre o commit e o delete da mensagem, mensagem malformada chegando na DLQ, isolamento entre provedores com tokens reais, credencial expirada recusada, referência resolvida fora de ordem e também rejeitada quando o alvo nunca chega, dois publishers disputando a outbox, republicação preservando o `eventId`, os invariantes do journal e as constraints do banco recusando o que o código não consegue fazer.
+
+Dois testes cobrem especificamente a recuperação: um derruba a instância que processou as operações, sobe outra e confere que idempotência, inbox, saldo e ledger atravessaram o reinício intactos; o outro estaciona um `REFUND` sem referência numa instância, mata ela, e verifica que outra instância liquida a pendência quando a aposta chega. O `cmd/jungle` tem ainda um teste que sobe e derruba a aplicação inteira contra as dependências reais e confere que a porta foi liberada e que nenhuma goroutine vazou.
+
+### Múltiplas instâncias
+
+```bash
+docker compose -f docker-compose.yml -f scale.override.yml up -d --scale app=3
+```
+
+Detalhes na seção anterior. As três réplicas dividem Postgres e SQS, então é essa a configuração para reproduzir corrida na mesma carteira, publishers competindo e reentrega de mensagem.
+
+### Simulações de falha
+
+Todas assumem a stack no ar e um `WALLET` já aberto.
+
+**Queda no meio do processamento.** Dispare carga e derrube uma réplica sem aviso:
+
+```bash
+docker compose -f docker-compose.yml -f scale.override.yml up -d --scale app=3
+docker compose kill -s SIGKILL $(docker compose ps -q app | head -1)
+```
+
+Reenvie as operações que estavam em voo com a mesma `Idempotency-Key`. Ou elas foram commitadas e voltam como `idempotentReplay: true`, ou nunca existiram e são processadas agora. Meio caminho não acontece, porque saldo, transação, ledger, journal e eventos entram no mesmo commit. Confira com a reconciliação.
+
+**Banco fora do ar.** `docker compose stop postgres` e o `/health/ready` passa a responder `503` dizendo qual dependência caiu, enquanto o `/health/live` continua `200` (uma liveness que morre junto com o banco faz o orquestrador matar um processo saudável). As requisições respondem `503 UNAVAILABLE`, que é retryable, e nada fica pela metade. `docker compose start postgres` e o serviço volta sozinho.
+
+**Mensagem inválida indo para a DLQ.** Mande um corpo quebrado na fila de entrada e veja ele parar na DLQ depois das cinco tentativas, sem nunca virar movimento financeiro:
+
+```bash
+docker compose exec -T localstack awslocal sqs send-message \
+  --region us-east-1 \
+  --queue-url http://localhost:4566/000000000000/wager-transactions.fifo \
+  --message-group-id "$WALLET" --message-deduplication-id "broken-1" \
+  --message-body 'isto não é json'
+
+make queues   # ApproximateNumberOfMessages na DLQ
+```
+
+**Consumidor interrompido depois do commit e antes de apagar a mensagem.** É o caso clássico de reentrega. Parar o container na janela certa na mão é sorte, então ele está automatizado em `TestSQSConsumer_InterruptedAfterCommitBeforeDelete`: o efeito é commitado, a mensagem volta para a fila, e a segunda entrega é barrada pela inbox sem debitar de novo.
+
+**Outbox acumulada.** Pare o app com eventos pendentes, gere movimento e suba de novo:
+
+```bash
+docker compose stop app
+# ... envie operações pelo SQS ...
+docker compose start app
+```
+
+Os eventos saem depois, na ordem, com o mesmo `eventId`, e o `jungle_outbox_lag_seconds` volta a zero. É o mesmo comportamento que o teste de carga em `deploy/loadtest` mede sob rajada.
+
+**Referência que nunca chega.** Mande um `REFUND` apontando para uma aposta inexistente. Ele volta `202` com `PENDING_REFERENCE`, o worker tenta com backoff e, depois de 10 tentativas ou 15 minutos, a transação vira `REJECTED` com `REFERENCE_NOT_FOUND`. Para ver isso rápido, suba o app com `REFERENCE_INTERVAL=1s`.
+
+### CI
+
+O `.github/workflows/ci.yml` roda em quatro jobs: checagens estáticas, unitários, a suíte de integração com serviços reais (aplicando, revertendo e reaplicando as migrations), e um job que faz `docker compose up --build` de um clone limpo e dirige um fluxo autenticado de ponta a ponta. Esse último existe para pegar o que o README não pega: se o projeto realmente sobe na mão de outra pessoa.
 
 ## Observabilidade
 
@@ -256,19 +393,7 @@ O Grafana já vem com o dashboard "Jungle - Wallet & Ledger" provisionado como h
 
 Tracing com OpenTelemetry exportando para o Jaeger. Um trace cobre a requisição HTTP, cada statement SQL dentro da transação, o span do caso de uso com os atributos da operação e, mais adiante, a publicação do evento e o consumo dele no SQS. Isso último exige um detalhe: quem publica a outbox não é a goroutine que atendeu a requisição, então o contexto vai gravado na coluna `trace_parent` e é restaurado na hora de publicar. Sem isso cada evento abriria um trace solto e a relação de causa se perderia.
 
-Se quiser ver o sistema sob pressão, `deploy/loadtest/run.sh` roda um teste de carga com k6 em três cenários simultâneos e amostra o lag da outbox durante a corrida. Uma execução gravada, com os números e as ressalvas honestas sobre o ambiente, está em [deploy/loadtest/RESULTS.md](deploy/loadtest/RESULTS.md). O resumo é que o gargalo não é o lock de carteira, é o publisher da outbox, que envia um evento por vez.
-
-## Configuração
-
-Os defaults estão em `internal/config/config.go`, que é a fonte da verdade. O `.env.example` espelha os valores para rodar a aplicação no host contra os serviços do Compose. As variáveis são as óbvias (`JUNGLE_PORT`, `POSTGRES_*`, `SQS_*`, `OIDC_*`, `OUTBOX_INTERVAL`, `REFERENCE_INTERVAL`, `SHUTDOWN_TIMEOUT`, `TRACING_*`, `OTEL_*`), mas três merecem nota:
-
-- `JUNGLE_INSTANCE_ID` (padrão `<hostname>-<pid>`) identifica o processo entre as instâncias e fica gravado no claim da outbox, então dá para saber qual instância morreu segurando trabalho.
-- `OIDC_ADDITIONAL_ISSUERS` existe porque o Keycloak deriva o `iss` do host pelo qual o token foi pedido: o mesmo realm responde `http://keycloak:8080/realms/jungle` dentro da rede do Compose e `http://localhost:8081/realms/jungle` do host. As duas grafias são listadas explicitamente em vez de desligar a checagem de issuer.
-- `TRACING_ENABLED=false` instala um tracer no-op, e aí o serviço roda normalmente sem nenhum coletor por perto.
-
-Migrations ficam em `migrations/`, são aplicadas com golang-migrate pelo `cmd/migrate` (`up`, `down [n]`, `version`) e usam as mesmas variáveis de Postgres da aplicação.
-
-As quatro filas FIFO (`wager-transactions.fifo` e `wager-events.fifo`, cada uma com sua DLQ) são provisionadas pelo `deploy/localstack/init-sqs.sh` com `maxReceiveCount=5`. Cada uma carrega ainda uma access policy: o provedor enfileira mas não lê, o serviço lê mas não enfileira. O LocalStack guarda essas policies sem avaliá-las como a AWS de verdade faz.
+Se quiser ver o sistema sob pressão, `deploy/loadtest/run.sh` roda um teste de carga com k6 em três cenários simultâneos e amostra o lag da outbox durante a corrida. Uma execução gravada, com os números e as ressalvas honestas sobre o ambiente, está em [deploy/loadtest/RESULTS.md](deploy/loadtest/RESULTS.md). O resumo é que o gargalo não é o lock de carteira, é o publisher da outbox: ele envia um evento por vez e sustenta uns 300 por segundo, contra as cerca de 900 que o caminho de escrita produz sob carga.
 
 ## Estrutura
 

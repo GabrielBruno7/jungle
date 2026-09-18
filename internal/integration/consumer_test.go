@@ -3,12 +3,14 @@
 package integration
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
+	"jungle/internal/app"
 	"jungle/internal/domain/wagertx"
 )
 
@@ -84,6 +86,30 @@ func TestSQSConsumer_RedeliveryOfTheSameMessageIsDeduplicated(t *testing.T) {
 	}
 	if got := inst.transactionCount(t, op.externalID); got != 1 {
 		t.Errorf("transactions = %d, want 1", got)
+	}
+}
+
+func TestInbox_SameMessageIdWithADifferentPayloadConflicts(t *testing.T) {
+	i := newInstance(t, "test")
+	walletID, playerID := i.openWallet(t, "100.00")
+	suffix := uuid.NewString()[:8]
+
+	op := operation{externalID: "inbox-hash-" + suffix, playerID: playerID, walletID: walletID,
+		kind: wagertx.Bet, amount: "10.00", messageID: "msg-" + suffix}
+
+	i.mustSubmit(t, op)
+
+	tampered := op
+	tampered.amount = "90.00"
+
+	if _, err := i.submit(t, tampered); !errors.Is(err, app.ErrIdempotencyConflict) {
+		t.Fatalf("error = %v, want ErrIdempotencyConflict (a redelivery whose payload changed must not be replayed)", err)
+	}
+	if got := i.balance(t, walletID); got != "90.00" {
+		t.Errorf("balance = %s, want 90.00 (only the original bet of 10.00)", got)
+	}
+	if got := i.ledgerCount(t, walletID); got != 2 {
+		t.Errorf("ledger entries = %d, want 2 (opening and the original bet)", got)
 	}
 }
 

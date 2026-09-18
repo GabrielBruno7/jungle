@@ -269,6 +269,44 @@ func (p *recordingPublisher) eventIDs() []string {
 	return ids
 }
 
+func (i *instance) resolverWith(policy app.ReferencePolicy) *app.ResolveReferences {
+	return app.NewResolveReferences(i.uow, i.process, app.SystemClock{}, policy, zap.NewNop())
+}
+
+func (i *instance) shutdown() { i.pool.Close() }
+
+func tryFetchToken(t *testing.T, clientID, clientSecret string) (string, bool) {
+	t.Helper()
+
+	endpoint := fmt.Sprintf("%s/realms/%s/protocol/openid-connect/token", keycloakURL(), testRealm)
+	form := url.Values{
+		"grant_type":    {"client_credentials"},
+		"client_id":     {clientID},
+		"client_secret": {clientSecret},
+	}
+
+	resp, err := http.Post(endpoint, "application/x-www-form-urlencoded", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatalf("requesting token from %s: %v (is `docker compose up -d keycloak` running?)", endpoint, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return "", false
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("token endpoint returned %d for client %s", resp.StatusCode, clientID)
+	}
+
+	var body struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decoding token response: %v", err)
+	}
+	return body.AccessToken, body.AccessToken != ""
+}
+
 func fetchToken(t *testing.T, clientID, clientSecret string) string {
 	t.Helper()
 

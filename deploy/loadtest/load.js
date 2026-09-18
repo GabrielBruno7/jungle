@@ -24,6 +24,7 @@ const settleTime = new Trend('jungle_settle_ms', true);
 
 export const options = {
   discardResponseBodies: false,
+  summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
   scenarios: {
     spread: {
       executor: 'ramping-arrival-rate',

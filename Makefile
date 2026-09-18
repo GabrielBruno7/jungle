@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help up down logs ps migrate-up migrate-down migrate-version \
         test test-race test-integration test-all vet fmt fmt-check check \
-        scale queues token smoke
+        scale queues token
 
 POSTGRES_ENV := POSTGRES_HOST=localhost POSTGRES_PORT=5432 POSTGRES_USER=jungle \
                 POSTGRES_PASSWORD=jungle POSTGRES_DB=jungle POSTGRES_SSLMODE=disable
@@ -76,7 +76,7 @@ test-race: ## Unit tests with the race detector
 
 test-integration: ## Integration tests (needs `make deps` and `make migrate-up` first)
 	$(INTEGRATION_ENV) go test -tags=integration -race -count=1 ./internal/integration/...
-	$(LIFECYCLE_ENV) go test -tags=integration -count=1 ./cmd/jungle/...
+	$(LIFECYCLE_ENV) go test -tags=integration -race -count=1 ./cmd/jungle/...
 
 test-all: test-race test-integration ## Every test
 

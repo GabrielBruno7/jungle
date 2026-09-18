@@ -336,7 +336,7 @@ func claimSpecificEvent(t *testing.T, i *instance, eventID uuid.UUID, owner stri
 	err := i.uow.Within(context.Background(), func(ctx context.Context, repos app.Repositories) error {
 		if _, err := i.pool.Exec(ctx,
 			`UPDATE outbox SET locked_by = NULL, locked_until = NULL, published_at = NULL,
-			        next_attempt_at = now() - interval '1 hour'
+			        next_attempt_at = to_timestamp(0)
 			 WHERE event_id = $1`, eventID); err != nil {
 			return err
 		}

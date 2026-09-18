@@ -310,6 +310,42 @@ func TestPendingReference_ResolvesWhenTheTargetArrives(t *testing.T) {
 	}
 }
 
+func TestPendingReference_RejectedWhenTheTargetNeverArrives(t *testing.T) {
+	i := newInstance(t, "test")
+	walletID, playerID := i.openWallet(t, "100.00")
+	suffix := uuid.NewString()[:8]
+
+	parked := i.mustSubmit(t, operation{externalID: "orphan-refund-" + suffix, playerID: playerID, walletID: walletID,
+		kind: wagertx.Refund, amount: "40.00", reference: "bet-that-never-comes-" + suffix})
+	if parked.Transaction.Status() != wagertx.PendingReference {
+		t.Fatalf("status = %s, want PENDING_REFERENCE", parked.Transaction.Status())
+	}
+
+	policy := app.DefaultReferencePolicy()
+	policy.MaxAttempts = 1
+
+	if _, err := i.resolverWith(policy).RunOnce(context.Background()); err != nil {
+		t.Fatalf("resolving references: %v", err)
+	}
+
+	settled, err := i.queries.GetTransaction(context.Background(), internalIdentity, parked.Transaction.ID())
+	if err != nil {
+		t.Fatalf("reading the parked transaction: %v", err)
+	}
+	if settled.Status() != wagertx.Rejected {
+		t.Fatalf("status = %s, want REJECTED once the attempts ran out", settled.Status())
+	}
+	if settled.FailureCode() != wagertx.FailureReferenceNotFound {
+		t.Errorf("failureCode = %s, want REFERENCE_NOT_FOUND", settled.FailureCode())
+	}
+	if got := i.balance(t, walletID); got != "100.00" {
+		t.Errorf("balance = %s, want 100.00 (an expired reversal must not pay out)", got)
+	}
+	if got := i.ledgerCount(t, walletID); got != 1 {
+		t.Errorf("ledger entries = %d, want 1 (only the opening credit)", got)
+	}
+}
+
 func TestReconciliation_MatchesTheLedger(t *testing.T) {
 	i := newInstance(t, "test")
 	walletID, playerID := i.openWallet(t, "1000.00")

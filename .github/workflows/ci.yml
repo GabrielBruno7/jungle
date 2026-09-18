@@ -136,7 +136,7 @@ jobs:
           TEST_KEYCLOAK_URL: http://localhost:8081
 
       - name: Fx lifecycle (start, serve, stop, release resources)
-        run: go test -tags=integration -count=1 ./cmd/jungle/...
+        run: go test -tags=integration -race -count=1 ./cmd/jungle/...
         env:
           JUNGLE_PORT: "18080"
           POSTGRES_HOST: localhost
