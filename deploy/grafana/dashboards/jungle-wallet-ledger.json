@@ -1,0 +1,584 @@
+{
+  "uid": "jungle-wallet-ledger",
+  "title": "Jungle — Wallet & Ledger",
+  "description": "Operational view of the wallet service. The two red-thresholded stats on the top right should be permanently zero; everything else is throughput, latency and queue health.",
+  "tags": ["jungle", "wallet", "ledger"],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "source",
+        "label": "Entry point",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+        "query": "label_values(jungle_wager_transaction_results_total, source)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "selected": true, "text": ["All"], "value": ["$__all"] }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Health at a glance",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Operations / sec",
+      "description": "Wager operations settling per second, across HTTP and SQS. Zero means no traffic, not a fault — this is a local environment.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 5, "w": 5, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(jungle_wager_transaction_results_total{source=~\"$source\"}[$__rate_interval]))",
+          "legendFormat": "ops/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 2,
+          "color": { "mode": "fixed", "fixedColor": "text" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Share rejected",
+      "description": "Fraction of operations refused by a business rule (insufficient balance, duplicate reversal, reference mismatch). A rejection is a legitimate outcome, not an error — but a sustained climb means providers are sending operations that cannot be applied.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 5, "w": 5, "x": 5, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(jungle_wager_transaction_results_total{status=\"REJECTED\", source=~\"$source\"}[$__rate_interval])) / clamp_min(sum(rate(jungle_wager_transaction_results_total{source=~\"$source\"}[$__rate_interval])), 0.000000001)",
+          "legendFormat": "rejected"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 1,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 0.25 },
+              { "color": "orange", "value": 0.5 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Duplicates / sec",
+      "description": "Repeat submissions short-circuited by idempotency. Healthy at any value: providers retry, and catching those repeats is the system working. Only alarming if it dwarfs real throughput.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 5, "w": 4, "x": 10, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(jungle_duplicate_operations_total[$__rate_interval]))",
+          "legendFormat": "dupes/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 2,
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "area",
+        "colorMode": "value",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Reconciliation divergences",
+      "description": "Wallets whose stored balance disagreed with the sum of their ledger. This must be zero. Any value above zero means the balance and the ledger have drifted apart, which should be impossible — investigate before processing anything else.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 5, "w": 5, "x": 14, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(jungle_reconciliation_divergences_total)",
+          "legendFormat": "divergences"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "background",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Permanent failures",
+      "description": "Transactions recorded as FAILED after a permanent infrastructure failure, kept for audit. Expected to be zero. Anything here is a pending reversal that exhausted its retries against a broken dependency and needs a human.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 5, "w": 5, "x": 19, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(jungle_permanent_failures_total)",
+          "legendFormat": "failed"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "graphMode": "none",
+        "colorMode": "background",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "Throughput",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Operations by outcome",
+      "description": "PROCESSED is the happy path. REJECTED is a business refusal and carries a failureCode. PENDING_REFERENCE means a reversal is parked waiting for the operation it reverses — it should drain, not accumulate. FAILED should never appear.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (rate(jungle_wager_transaction_results_total{source=~\"$source\"}[$__rate_interval]))",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 2,
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "auto",
+            "stacking": { "mode": "none", "group": "A" }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "PROCESSED" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "REJECTED" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "orange" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "FAILED" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Operations by entry point",
+      "description": "HTTP and SQS run the same use case, so both lines should behave identically in shape. A divergence in outcome mix between the two doors would mean the paths are not actually equivalent.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (source) (rate(jungle_wager_transaction_results_total[$__rate_interval]))",
+          "legendFormat": "{{source}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 2,
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "auto",
+            "stacking": { "mode": "none", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Settle latency percentiles",
+      "description": "Time to settle one operation end to end, including the wallet row lock. p99 well above p50 means contention: writers queuing behind each other on the same wallet. Sub-10ms p99 is normal locally.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, source) (rate(jungle_wager_processing_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{source}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, source) (rate(jungle_wager_processing_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{source}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le, source) (rate(jungle_wager_processing_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{source}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 4,
+          "min": 0,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 5,
+            "showPoints": "auto"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 11,
+      "type": "row",
+      "title": "Messaging",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "collapsed": false
+    },
+    {
+      "id": 12,
+      "type": "gauge",
+      "title": "Outbox lag",
+      "description": "Age of the oldest event still waiting to be published. Should hover near zero, since the publisher runs every second. A climbing value means events are produced faster than they go out, or every publisher is stuck — downstream systems are drifting out of date and nothing else reveals it.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 24 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(jungle_outbox_lag_seconds)",
+          "legendFormat": "lag"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 2,
+          "min": 0,
+          "max": 60,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 30 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Outbox: published vs retried",
+      "description": "Events leaving the outbox against publish attempts that failed and backed off. Retries should be flat at zero when the transport is healthy; a retry line tracking the publish line means the queue is rejecting writes.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 24 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(jungle_outbox_published_total[$__rate_interval]))",
+          "legendFormat": "published"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(jungle_outbox_retries_total[$__rate_interval]))",
+          "legendFormat": "retried"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 2,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "showPoints": "auto" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "published" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "retried" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Consumer: redeliveries and DLQ",
+      "description": "Redeliveries are transient failures handed back to the queue, which is the system recovering. DLQ arrivals are messages abandoned as permanently unprocessable — each one is a message a human needs to look at.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 24 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(jungle_message_retries_total[$__rate_interval]))",
+          "legendFormat": "redelivered"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(jungle_messages_dead_lettered_total[$__rate_interval]))",
+          "legendFormat": "dead-lettered"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 3,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "showPoints": "auto" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "dead-lettered" },
+            "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }]
+          }
+        ]
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Pending references",
+      "description": "Reversals parked waiting for the operation they reverse to arrive. A spike is normal when messages arrive out of order; it should drain within the retry budget. A plateau means references are never turning up and those reversals will eventually be rejected.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 24 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(jungle_pending_references)",
+          "legendFormat": "waiting"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 25, "showPoints": "auto" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull"] },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+    {
+      "id": 16,
+      "type": "row",
+      "title": "Contention and access",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "collapsed": false
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Concurrency conflicts",
+      "description": "Wallet updates refused because the version compare-and-swap found the row already moved on. Some of this under load is healthy — it is the lost-update guard firing. Sustained high rates mean many writers are fighting over the same wallets.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 33 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(jungle_concurrency_conflicts_total[$__rate_interval]))",
+          "legendFormat": "conflicts"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 3,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "showPoints": "auto" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull"] },
+        "tooltip": { "mode": "single", "sort": "none" }
+      }
+    },
+    {
+      "id": 18,
+      "type": "timeseries",
+      "title": "Duplicates by mechanism",
+      "description": "Which layer caught each repeat. idempotency-key is the normal case. operation-identity means a provider resubmitted the same operation under a new key. payload-conflict means a key was reused for different content, which is a client bug worth reporting back.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 33 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (mechanism) (rate(jungle_duplicate_operations_total[$__rate_interval]))",
+          "legendFormat": "{{mechanism}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 3,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "showPoints": "auto" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
+      "id": 19,
+      "type": "timeseries",
+      "title": "Auth failures by reason",
+      "description": "missing means no bearer token was sent; invalid means the token failed signature, audience, issuer or expiry checks. A steady trickle is normal from probes and misconfigured clients. A sudden climb in invalid is worth looking at.",
+      "datasource": { "type": "prometheus", "uid": "jungle-prometheus" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 33 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (rate(jungle_auth_failures_total[$__rate_interval]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "decimals": 3,
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 15, "showPoints": "auto" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    }
+  ]
+}

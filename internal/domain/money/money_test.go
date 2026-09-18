@@ -51,23 +51,23 @@ func TestParse_Valid(t *testing.T) {
 
 func TestParse_InvalidFormat(t *testing.T) {
 	cases := []string{
-		"",            // empty
-		"NaN",         // not a number spelled out
-		"Infinity",    // infinity spelled out
-		"-Infinity",   // negative infinity
-		"1e10",        // scientific notation
-		"1E10",        // scientific notation, uppercase
-		"25",          // missing decimal places
-		"25.0",        // too few decimal places
-		"25.000",      // too many decimal places (excess scale)
-		"25,00",       // wrong decimal separator
-		"+25.00",      // explicit plus sign not accepted
-		"25.00 ",      // trailing whitespace
-		" 25.00",      // leading whitespace
-		"twenty-five", // not numeric at all
-		"25.0a",       // trailing garbage
-		"1,000.00",    // thousands separator
-		".00",         // no integer part
+		"",
+		"NaN",
+		"Infinity",
+		"-Infinity",
+		"1e10",
+		"1E10",
+		"25",
+		"25.0",
+		"25.000",
+		"25,00",
+		"+25.00",
+		"25.00 ",
+		" 25.00",
+		"twenty-five",
+		"25.0a",
+		"1,000.00",
+		".00",
 	}
 
 	for _, input := range cases {
@@ -90,8 +90,6 @@ func TestParse_InvalidFormat(t *testing.T) {
 }
 
 func TestParse_Overflow(t *testing.T) {
-	// math.MaxInt64 = 9223372036854775807, so its minor-unit form overflows
-	// once multiplied by 100 (or even just parsed with two extra digits).
 	huge := "999999999999999999999999.00"
 
 	_, err := money.Parse(huge, money.BRL)
@@ -113,7 +111,6 @@ func TestParseNonNegative(t *testing.T) {
 		t.Fatalf("MinorUnits() = %d, want 2500", m.MinorUnits())
 	}
 
-	// -0.00 has zero magnitude, so it must NOT be treated as negative.
 	if _, err := money.ParseNonNegative("-0.00", money.BRL); err != nil {
 		t.Fatalf("ParseNonNegative(-0.00) unexpected error: %v", err)
 	}
@@ -152,7 +149,6 @@ func TestArithmetic(t *testing.T) {
 		t.Errorf("Sub = %s, want 20.00", diff.DecimalString())
 	}
 
-	// Sub may legitimately produce a negative internal difference.
 	negDiff, err := b.Sub(a)
 	if err != nil {
 		t.Fatalf("Sub (negative) unexpected error: %v", err)
@@ -276,10 +272,10 @@ func TestJSON_RoundTrip(t *testing.T) {
 
 func TestJSON_Unmarshal_Invalid(t *testing.T) {
 	cases := []string{
-		`{"amount":"25.0","currency":"BRL"}`,  // excess/short scale
-		`{"amount":"NaN","currency":"BRL"}`,   // NaN
-		`{"amount":"25.00","currency":"brl"}`, // lowercase currency
-		`{"amount":"1e10","currency":"BRL"}`,  // scientific notation
+		`{"amount":"25.0","currency":"BRL"}`,
+		`{"amount":"NaN","currency":"BRL"}`,
+		`{"amount":"25.00","currency":"brl"}`,
+		`{"amount":"1e10","currency":"BRL"}`,
 	}
 
 	for _, input := range cases {
@@ -299,5 +295,26 @@ func TestFromMinorUnits_Rehydration(t *testing.T) {
 	}
 	if m.MinorUnits() != 2500 {
 		t.Errorf("MinorUnits() = %d, want 2500", m.MinorUnits())
+	}
+}
+
+func TestDecimalString_ExtremeValues(t *testing.T) {
+	cases := []struct {
+		minorUnits int64
+		want       string
+	}{
+		{math.MaxInt64, "92233720368547758.07"},
+		{math.MinInt64, "-92233720368547758.08"},
+		{-1, "-0.01"},
+		{1, "0.01"},
+		{0, "0.00"},
+		{-100, "-1.00"},
+	}
+
+	for _, tc := range cases {
+		got := money.FromMinorUnits(tc.minorUnits, money.BRL).DecimalString()
+		if got != tc.want {
+			t.Errorf("FromMinorUnits(%d).DecimalString() = %q, want %q", tc.minorUnits, got, tc.want)
+		}
 	}
 }

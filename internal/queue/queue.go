@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -11,12 +12,10 @@ import (
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
+	"jungle/internal/app"
 	"jungle/internal/config"
 )
 
-// NewClient builds an SQS client. When cfg.SQS.Endpoint is set (LocalStack,
-// in local dev) it points the client at it with dummy static credentials;
-// otherwise it resolves the real AWS endpoint and credential chain.
 func NewClient(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*sqs.Client, error) {
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
 		awsconfig.WithRegion(cfg.SQS.Region),
@@ -37,9 +36,35 @@ func NewClient(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*sqs.Cl
 
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			if _, err := client.ListQueues(ctx, &sqs.ListQueuesInput{}); err != nil {
-				return fmt.Errorf("connecting to sqs: %w", err)
+			deadline := time.Now().Add(cfg.Startup.DependencyTimeout)
+
+			for attempt := 1; ; attempt++ {
+				probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				_, err := client.ListQueues(probeCtx, &sqs.ListQueuesInput{})
+				cancel()
+
+				if err == nil {
+					break
+				}
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if time.Now().After(deadline) {
+					return fmt.Errorf("connecting to sqs: %w", err)
+				}
+
+				logger.Warn("sqs not reachable yet, retrying",
+					zap.String("endpoint", cfg.SQS.Endpoint),
+					zap.Int("attempt", attempt),
+					zap.Error(err))
+
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(time.Second):
+				}
 			}
+
 			logger.Info("connected to sqs",
 				zap.String("region", cfg.SQS.Region),
 				zap.String("endpoint", cfg.SQS.Endpoint),
@@ -51,9 +76,11 @@ func NewClient(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*sqs.Cl
 	return client, nil
 }
 
-// Module provides the shared *sqs.Client and forces it to be built (and
-// its connectivity verified) on startup even before any feature depends on it.
 var Module = fx.Module("queue",
-	fx.Provide(NewClient),
+	fx.Provide(
+		NewClient,
+		NewConsumer,
+		fx.Annotate(NewPublisher, fx.As(new(app.Publisher))),
+	),
 	fx.Invoke(func(*sqs.Client) {}),
 )

@@ -235,7 +235,6 @@ func TestTransitions_TerminalNeverTransitionsAgain(t *testing.T) {
 			t.Fatalf("reaching terminal state: unexpected error: %v", err)
 		}
 
-		// Every further transition attempt must fail, whichever one it is.
 		if err := tx.MarkProcessed(money.Zero(money.BRL), time.Now()); !errors.Is(err, wagertx.ErrInvalidTransition) {
 			t.Errorf("MarkProcessed after terminal: error = %v, want ErrInvalidTransition", err)
 		}
@@ -271,8 +270,6 @@ func TestTransitions_PendingReference_OnlyForRefundAndRollback(t *testing.T) {
 		t.Errorf("Status() = %s, want PENDING_REFERENCE", refund.Status())
 	}
 
-	// From PENDING_REFERENCE, the worker can still resolve it to PROCESSED
-	// or REJECTED later.
 	if err := refund.MarkProcessed(mustMoney(t, "25.00"), time.Now()); err != nil {
 		t.Fatalf("MarkProcessed from PENDING_REFERENCE: unexpected error: %v", err)
 	}

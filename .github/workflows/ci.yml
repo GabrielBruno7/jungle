@@ -1,0 +1,248 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  GO_VERSION: "1.25.11"
+
+jobs:
+  static:
+    name: Formatting, vet and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: go.mod and go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go vet (integration build tag)
+        run: go vet -tags=integration ./...
+
+      - name: Build
+        run: go build ./...
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: go test
+        run: go test ./...
+
+      - name: go test -race
+        run: go test -race ./...
+
+  integration:
+    name: Integration tests (real Postgres, SQS and IdP)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Start dependencies
+        run: docker compose up -d postgres localstack keycloak
+
+      - name: Wait for Postgres
+        run: |
+          for _ in $(seq 1 60); do
+            if docker compose exec -T postgres pg_isready -U jungle -d jungle >/dev/null 2>&1; then
+              echo "postgres ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "postgres did not become ready"; docker compose logs postgres; exit 1
+
+      - name: Wait for LocalStack queues
+        run: |
+          for _ in $(seq 1 60); do
+            queues=$(docker compose exec -T localstack awslocal sqs list-queues --region us-east-1 2>/dev/null || true)
+            if echo "$queues" | grep -q "wager-transactions.fifo"; then
+              echo "queues provisioned"; echo "$queues"; exit 0
+            fi
+            sleep 2
+          done
+          echo "queues were not provisioned"; docker compose logs localstack; exit 1
+
+      - name: Wait for Keycloak realm
+        run: |
+          for _ in $(seq 1 90); do
+            if curl -sf http://localhost:8081/realms/jungle/.well-known/openid-configuration >/dev/null 2>&1; then
+              echo "keycloak realm ready"; exit 0
+            fi
+            sleep 2
+          done
+          echo "keycloak realm did not import"; docker compose logs keycloak; exit 1
+
+      - name: Apply migrations
+        run: go run ./cmd/migrate up
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_USER: jungle
+          POSTGRES_PASSWORD: jungle
+          POSTGRES_DB: jungle
+          POSTGRES_SSLMODE: disable
+
+      - name: Migrations revert and reapply cleanly
+        run: |
+          go run ./cmd/migrate down 5
+          go run ./cmd/migrate up
+          go run ./cmd/migrate version
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_USER: jungle
+          POSTGRES_PASSWORD: jungle
+          POSTGRES_DB: jungle
+          POSTGRES_SSLMODE: disable
+
+      - name: Integration tests
+        run: go test -tags=integration -race -count=1 ./internal/integration/...
+        env:
+          TEST_POSTGRES_DSN: postgres://jungle:jungle@localhost:5432/jungle?sslmode=disable
+          TEST_KEYCLOAK_URL: http://localhost:8081
+
+      - name: Fx lifecycle (start, serve, stop, release resources)
+        run: go test -tags=integration -count=1 ./cmd/jungle/...
+        env:
+          JUNGLE_PORT: "18080"
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_USER: jungle
+          POSTGRES_PASSWORD: jungle
+          POSTGRES_DB: jungle
+          POSTGRES_SSLMODE: disable
+          AWS_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
+          SQS_ENDPOINT_URL: http://localhost:4566
+          SQS_REQUEST_QUEUE_URL: http://localhost:4566/000000000000/wager-transactions.fifo
+          SQS_EVENT_QUEUE_URL: http://localhost:4566/000000000000/wager-events.fifo
+          OIDC_ISSUER_URL: http://localhost:8081/realms/jungle
+          OIDC_AUDIENCE: jungle-api
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: docker compose logs --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+  stack:
+    name: Full stack boots from a clean checkout
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: docker compose up --build
+        run: docker compose up --build -d
+
+      - name: Wait for readiness
+        run: |
+          for _ in $(seq 1 90); do
+            if curl -sf http://localhost:8080/health/ready | grep -q '"status":"ok"'; then
+              echo "service ready"
+              curl -s http://localhost:8080/health/ready
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "service never became ready"; docker compose logs --tail 200; exit 1
+
+      - name: Smoke test an authenticated end-to-end flow
+        run: |
+          set -euo pipefail
+
+          token() {
+            curl -sf -X POST http://localhost:8081/realms/jungle/protocol/openid-connect/token \
+              -d grant_type=client_credentials -d "client_id=$1" -d "client_secret=$2" \
+              | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])'
+          }
+
+          INTERNAL=$(token jungle-internal internal-secret)
+          PROVIDER=$(token provider-a provider-a-secret)
+          PLAYER=$(python3 -c 'import uuid; print(uuid.uuid4())')
+          EXTERNAL="ci-$(date +%s)"
+
+          echo "--- an unauthenticated call must be refused ---"
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/wallets -X POST)
+          [ "$code" = "401" ] || { echo "expected 401, got $code"; exit 1; }
+
+          echo "--- open a wallet ---"
+          WALLET=$(curl -sf -X POST http://localhost:8080/wallets \
+            -H "Authorization: Bearer $INTERNAL" -H 'Content-Type: application/json' \
+            -d "{\"playerId\":\"$PLAYER\",\"initialBalance\":{\"amount\":\"1000.00\",\"currency\":\"BRL\"}}" \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+          echo "wallet $WALLET"
+
+          echo "--- submit a bet ---"
+          balance=$(curl -sf -X POST http://localhost:8080/wagering/transactions \
+            -H "Authorization: Bearer $PROVIDER" -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: provider-a:$EXTERNAL" \
+            -d "{\"providerId\":\"provider-a\",\"externalTransactionId\":\"$EXTERNAL\",\"playerId\":\"$PLAYER\",\"walletId\":\"$WALLET\",\"roundId\":\"r1\",\"gameId\":\"g1\",\"kind\":\"BET\",\"money\":{\"amount\":\"25.00\",\"currency\":\"BRL\"}}" \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["balance"]["amount"])')
+          [ "$balance" = "975.00" ] || { echo "expected 975.00, got $balance"; exit 1; }
+
+          echo "--- replaying it must not debit again ---"
+          replay=$(curl -sf -X POST http://localhost:8080/wagering/transactions \
+            -H "Authorization: Bearer $PROVIDER" -H 'Content-Type: application/json' \
+            -H "Idempotency-Key: provider-a:$EXTERNAL" \
+            -d "{\"providerId\":\"provider-a\",\"externalTransactionId\":\"$EXTERNAL\",\"playerId\":\"$PLAYER\",\"walletId\":\"$WALLET\",\"roundId\":\"r1\",\"gameId\":\"g1\",\"kind\":\"BET\",\"money\":{\"amount\":\"25.00\",\"currency\":\"BRL\"}}" \
+            | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["idempotentReplay"], d["balance"]["amount"])')
+          [ "$replay" = "True 975.00" ] || { echo "expected 'True 975.00', got '$replay'"; exit 1; }
+
+          echo "--- the ledger must agree with the stored balance ---"
+          consistent=$(curl -sf -X POST "http://localhost:8080/wallets/$WALLET/reconciliation" \
+            -H "Authorization: Bearer $INTERNAL" \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["consistent"])')
+          [ "$consistent" = "True" ] || { echo "reconciliation reported a divergence"; exit 1; }
+
+          echo "--- outbox events must have been published ---"
+          sleep 3
+          published=$(docker compose exec -T postgres psql -U jungle -d jungle -t -A \
+            -c "SELECT count(*) FROM outbox WHERE published_at IS NOT NULL;")
+          [ "$published" -ge 4 ] || { echo "expected at least 4 published events, got $published"; exit 1; }
+
+          echo "smoke test passed"
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: docker compose logs --tail 200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

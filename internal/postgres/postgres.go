@@ -4,16 +4,17 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
+	"jungle/internal/app"
 	"jungle/internal/config"
 )
 
-// NewPool builds a pgx connection pool. The actual connection is opened
-// (and verified) on OnStart, and the pool is closed on OnStop.
-func NewPool(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*pgxpool.Pool, error) {
+func NewPool(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger, tracerProvider trace.TracerProvider) (*pgxpool.Pool, error) {
 	dsn := fmt.Sprintf(
 		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
 		cfg.Postgres.User, cfg.Postgres.Password,
@@ -21,16 +22,33 @@ func NewPool(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*pgxpool.
 		cfg.Postgres.DBName, cfg.Postgres.SSLMode,
 	)
 
-	pool, err := pgxpool.New(context.Background(), dsn)
+	poolCfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parsing postgres dsn: %w", err)
+	}
+	poolCfg.ConnConfig.Tracer = otelpgx.NewTracer(
+		otelpgx.WithTracerProvider(tracerProvider),
+		otelpgx.WithTrimSQLInSpanName(),
+	)
+
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("creating postgres pool: %w", err)
 	}
 
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			if err := pool.Ping(ctx); err != nil {
-				return fmt.Errorf("pinging postgres: %w", err)
+			if err := waitFor(ctx, cfg.Startup.DependencyTimeout, func(ctx context.Context) error {
+				return pool.Ping(ctx)
+			}, func(attempt int, err error) {
+				logger.Warn("postgres not reachable yet, retrying",
+					zap.String("host", cfg.Postgres.Host),
+					zap.Int("attempt", attempt),
+					zap.Error(err))
+			}); err != nil {
+				return fmt.Errorf("connecting to postgres: %w", err)
 			}
+
 			logger.Info("connected to postgres",
 				zap.String("host", cfg.Postgres.Host),
 				zap.Int("port", cfg.Postgres.Port),
@@ -48,9 +66,15 @@ func NewPool(lc fx.Lifecycle, cfg *config.Config, logger *zap.Logger) (*pgxpool.
 	return pool, nil
 }
 
-// Module provides the shared *pgxpool.Pool and forces it to connect on
-// startup even before any feature depends on it.
+func NewPoolRepos(pool *pgxpool.Pool) *Repos {
+	return NewRepos(pool)
+}
+
 var Module = fx.Module("postgres",
-	fx.Provide(NewPool),
+	fx.Provide(
+		NewPool,
+		fx.Annotate(NewUnitOfWork, fx.As(new(app.UnitOfWork))),
+		fx.Annotate(NewPoolRepos, fx.As(new(app.Repositories))),
+	),
 	fx.Invoke(func(*pgxpool.Pool) {}),
 )

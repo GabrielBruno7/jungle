@@ -11,14 +11,9 @@ CREATE TABLE wallet_ledger_entry (
 
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    -- At most one ledger entry per (wallet, transaction) — a transaction
-    -- moves a wallet's balance at most once.
     CONSTRAINT wallet_ledger_entry_wallet_transaction_unique
         UNIQUE (wallet_id, transaction_id),
 
-    -- The arithmetic invariant itself, enforced by the database regardless
-    -- of what application code computed: balanceAfter = balanceBefore ±
-    -- amount, depending on direction.
     CONSTRAINT wallet_ledger_entry_balance_math CHECK (
         (direction = 'DEBIT' AND balance_after_minor_units = balance_before_minor_units - amount_minor_units)
         OR
@@ -29,9 +24,6 @@ CREATE TABLE wallet_ledger_entry (
 CREATE INDEX wallet_ledger_entry_wallet_id_created_at_idx
     ON wallet_ledger_entry (wallet_id, created_at, id);
 
--- Append-only: once written, a ledger entry can never be changed or
--- removed, by anyone or anything, including a raw psql session or an
--- application bug. Corrections are always a new entry, never an edit.
 CREATE FUNCTION wallet_ledger_entry_forbid_mutation() RETURNS trigger AS $$
 BEGIN
     RAISE EXCEPTION 'wallet_ledger_entry rows are append-only and cannot be updated or deleted';

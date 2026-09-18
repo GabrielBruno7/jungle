@@ -159,11 +159,6 @@ func TestDebit_InsufficientBalance_LeavesWalletUnchanged(t *testing.T) {
 	}
 }
 
-// TestDebit_TwoConcurrentBets mirrors the challenge's mandatory scenario at
-// the pure domain level: a wallet with 100.00 receiving two 80.00 debits
-// applied one after another (as a serialized DB transaction would apply
-// them) must process exactly one and reject the other for insufficient
-// balance, leaving a final balance of 20.00 with a single balance change.
 func TestDebit_TwoConcurrentBets(t *testing.T) {
 	w := newTestWallet(t, "100.00")
 	bet := mustMoney(t, "80.00")

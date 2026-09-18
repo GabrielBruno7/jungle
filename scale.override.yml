@@ -1,0 +1,4 @@
+services:
+  app:
+    ports: !override
+      - "8090-8092:8080"

@@ -8,21 +8,33 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/fx"
 	"go.uber.org/zap"
 
 	"jungle/internal/config"
 )
 
-// NewEngine builds the gin engine used to serve every route in the app.
-// gin.New() (unlike gin.Default()) attaches no middleware, so request
-// logging and panic recovery are wired up explicitly here using zap, to
-// stay consistent with the structured logging used everywhere else.
-func NewEngine(logger *zap.Logger) *gin.Engine {
+func NewEngine(logger *zap.Logger, cfg *config.Config, tracerProvider trace.TracerProvider) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 
 	engine := gin.New()
-	engine.Use(recoveryMiddleware(logger), loggingMiddleware(logger))
+	engine.Use(
+		otelgin.Middleware(cfg.Tracing.ServiceName,
+			otelgin.WithTracerProvider(tracerProvider),
+			otelgin.WithFilter(func(r *http.Request) bool {
+				switch r.URL.Path {
+				case "/health/live", "/health/ready", "/metrics":
+					return false
+				default:
+					return true
+				}
+			}),
+		),
+		recoveryMiddleware(logger),
+		loggingMiddleware(logger),
+	)
 	return engine
 }
 
@@ -33,13 +45,26 @@ func loggingMiddleware(logger *zap.Logger) gin.HandlerFunc {
 
 		c.Next()
 
-		logger.Info("http request",
+		fields := []zap.Field{
 			zap.String("method", c.Request.Method),
 			zap.String("path", path),
 			zap.Int("status", c.Writer.Status()),
 			zap.String("client_ip", c.ClientIP()),
 			zap.Duration("latency", time.Since(start)),
-		)
+		}
+		if correlationID := c.Writer.Header().Get("X-Correlation-Id"); correlationID != "" {
+			fields = append(fields, zap.String("correlationId", correlationID))
+		} else if correlationID := c.GetHeader("X-Correlation-Id"); correlationID != "" {
+			fields = append(fields, zap.String("correlationId", correlationID))
+		}
+
+		if len(c.Errors) > 0 {
+			logger.Error("http request failed",
+				append(fields, zap.String("error", c.Errors.String()))...)
+			return
+		}
+
+		logger.Info("http request", fields...)
 	}
 }
 
@@ -59,9 +84,6 @@ func recoveryMiddleware(logger *zap.Logger) gin.HandlerFunc {
 	}
 }
 
-// NewHTTPServer wraps the gin engine in an http.Server whose lifecycle is
-// tied to the fx.App: it starts listening on OnStart and shuts down
-// gracefully on OnStop.
 func NewHTTPServer(lc fx.Lifecycle, engine *gin.Engine, cfg *config.Config, logger *zap.Logger) *http.Server {
 	srv := &http.Server{
 		Addr:    fmt.Sprintf(":%d", cfg.Port),
@@ -87,9 +109,6 @@ func NewHTTPServer(lc fx.Lifecycle, engine *gin.Engine, cfg *config.Config, logg
 	return srv
 }
 
-// Module provides the gin engine and the http.Server that serves it, and
-// forces the server to be built (and thus started) even though nothing
-// else in the graph depends on it directly.
 var Module = fx.Module("server",
 	fx.Provide(
 		NewEngine,

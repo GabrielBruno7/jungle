@@ -1,3 +1,7 @@
 /tmp
 build-errors.log
 .env
+
+deploy/loadtest/out/
+
+/CLAUDE.md

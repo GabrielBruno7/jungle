@@ -1,13 +1,3 @@
-// Command migrate applies or reverts the versioned SQL migrations in
-// migrations/ against the Postgres database described by the same
-// environment variables the main app uses (see internal/config).
-//
-// Usage:
-//
-//	go run ./cmd/migrate up             # apply every pending migration
-//	go run ./cmd/migrate down           # revert every applied migration
-//	go run ./cmd/migrate down 1         # revert the last migration only
-//	go run ./cmd/migrate version        # print the current schema version
 package main
 
 import (

@@ -1,7 +1,3 @@
-// Package wallet holds the financial aggregate of the domain: Wallet (the
-// aggregate root) and WalletLedgerEntry (its append-only movement history).
-// Like internal/domain/money, this package has no dependency on Fx, HTTP,
-// SQL, or any other infrastructure package.
 package wallet
 
 import (
@@ -21,10 +17,6 @@ var (
 	ErrInvalidWallet       = errors.New("wallet: invalid wallet state")
 )
 
-// Wallet is the aggregate root of the financial domain: it owns the
-// player's balance in a single currency, and every rule that must hold for
-// that balance is enforced here, regardless of whether the caller is the
-// HTTP handler or the SQS consumer.
 type Wallet struct {
 	id        uuid.UUID
 	playerID  uuid.UUID
@@ -35,7 +27,6 @@ type Wallet struct {
 	updatedAt time.Time
 }
 
-// NewWalletParams carries the arguments to open a brand-new wallet.
 type NewWalletParams struct {
 	ID             uuid.UUID
 	PlayerID       uuid.UUID
@@ -44,15 +35,6 @@ type NewWalletParams struct {
 	Now            time.Time
 }
 
-// NewWallet opens a new wallet. InitialBalance must be zero or positive —
-// a wallet can never be opened already in debt — and must already be
-// denominated in Currency. The wallet always starts at version 1,
-// regardless of InitialBalance.
-//
-// NewWallet does not decide whether an OPENING WagerTransaction or a
-// WalletLedgerEntry should also be recorded for a positive initial
-// balance — that spans more than this one aggregate, so it belongs to the
-// OpenWallet use case, not to Wallet itself.
 func NewWallet(p NewWalletParams) (Wallet, error) {
 	if p.ID == uuid.Nil {
 		return Wallet{}, fmt.Errorf("%w: id is required", ErrInvalidWallet)
@@ -84,7 +66,6 @@ func NewWallet(p NewWalletParams) (Wallet, error) {
 	}, nil
 }
 
-// RehydrateWalletParams carries the exact persisted state of a wallet.
 type RehydrateWalletParams struct {
 	ID        uuid.UUID
 	PlayerID  uuid.UUID
@@ -95,11 +76,6 @@ type RehydrateWalletParams struct {
 	UpdatedAt time.Time
 }
 
-// RehydrateWallet reconstructs a Wallet from already-persisted state. It
-// validates structural invariants (matching currency, non-negative
-// balance, version >= 1) but never mutates anything or re-derives balance
-// or version from history — that would replay movements that were already
-// applied and committed.
 func RehydrateWallet(p RehydrateWalletParams) (Wallet, error) {
 	if p.ID == uuid.Nil || p.PlayerID == uuid.Nil || p.Currency == "" {
 		return Wallet{}, fmt.Errorf("%w: missing identity fields", ErrInvalidWallet)
@@ -133,11 +109,6 @@ func (w Wallet) Version() int64           { return w.version }
 func (w Wallet) CreatedAt() time.Time     { return w.createdAt }
 func (w Wallet) UpdatedAt() time.Time     { return w.updatedAt }
 
-// Debit subtracts amount from the wallet's balance. amount must be
-// positive and share the wallet's currency, and the resulting balance must
-// remain >= 0 — the central invariant this aggregate exists to protect.
-// On success the wallet's version is incremented and updatedAt set to now;
-// on failure the wallet is left completely unchanged.
 func (w *Wallet) Debit(amount money.Money, now time.Time) error {
 	if amount.Currency() != w.currency {
 		return ErrCurrencyMismatch
@@ -160,10 +131,6 @@ func (w *Wallet) Debit(amount money.Money, now time.Time) error {
 	return nil
 }
 
-// Credit adds amount to the wallet's balance. amount must be positive and
-// share the wallet's currency. On success the wallet's version is
-// incremented and updatedAt set to now; on failure the wallet is left
-// completely unchanged.
 func (w *Wallet) Credit(amount money.Money, now time.Time) error {
 	if amount.Currency() != w.currency {
 		return ErrCurrencyMismatch

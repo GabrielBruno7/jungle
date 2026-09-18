@@ -77,10 +77,6 @@ func TestNewWalletLedgerEntry_RejectsInvalidDirection(t *testing.T) {
 }
 
 func TestNewWalletLedgerEntry_DebitBelowZero_Rejected(t *testing.T) {
-	// The ledger entry itself just does arithmetic — a debit that would
-	// take the balance negative surfaces as an error here too, mirroring
-	// the invariant Wallet.Debit enforces. The wallet is still the one
-	// place callers should check before ever getting here.
 	_, err := wallet.NewWalletLedgerEntry(wallet.NewWalletLedgerEntryParams{
 		ID:            uuid.New(),
 		WalletID:      uuid.New(),
@@ -122,7 +118,7 @@ func TestRehydrateWalletLedgerEntry_RejectsCorruptBalanceAfter(t *testing.T) {
 		Direction:     wallet.Debit,
 		Amount:        mustMoney(t, "80.00"),
 		BalanceBefore: mustMoney(t, "100.00"),
-		BalanceAfter:  mustMoney(t, "50.00"), // corrupted: should be 20.00
+		BalanceAfter:  mustMoney(t, "50.00"),
 		CreatedAt:     time.Now(),
 	})
 	if !errors.Is(err, wallet.ErrLedgerInvariant) {

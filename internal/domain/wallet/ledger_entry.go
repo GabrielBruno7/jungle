@@ -10,8 +10,6 @@ import (
 	"jungle/internal/domain/money"
 )
 
-// LedgerDirection is the direction of a WalletLedgerEntry: money leaving
-// (Debit) or entering (Credit) the wallet.
 type LedgerDirection string
 
 const (
@@ -25,11 +23,6 @@ var (
 	ErrInvalidLedgerEntry = errors.New("wallet: invalid ledger entry")
 )
 
-// WalletLedgerEntry is a single, immutable line of the append-only ledger:
-// one financial movement, tied to the WagerTransaction that caused it,
-// carrying the exact balance snapshot before and after. It is never
-// edited or deleted once created — a correction is always a new entry,
-// never a change to an existing one.
 type WalletLedgerEntry struct {
 	id            uuid.UUID
 	walletID      uuid.UUID
@@ -41,8 +34,6 @@ type WalletLedgerEntry struct {
 	createdAt     time.Time
 }
 
-// NewWalletLedgerEntryParams carries the arguments to record a brand-new
-// ledger entry for a movement that just happened.
 type NewWalletLedgerEntryParams struct {
 	ID            uuid.UUID
 	WalletID      uuid.UUID
@@ -53,10 +44,6 @@ type NewWalletLedgerEntryParams struct {
 	Now           time.Time
 }
 
-// NewWalletLedgerEntry derives balanceAfter from BalanceBefore, Direction
-// and Amount itself — the caller cannot pass in a wrong balanceAfter by
-// mistake — and returns an error rather than ever producing an
-// inconsistent snapshot.
 func NewWalletLedgerEntry(p NewWalletLedgerEntryParams) (WalletLedgerEntry, error) {
 	if p.ID == uuid.Nil || p.WalletID == uuid.Nil || p.TransactionID == uuid.Nil {
 		return WalletLedgerEntry{}, fmt.Errorf("%w: missing identity fields", ErrInvalidLedgerEntry)
@@ -85,8 +72,6 @@ func NewWalletLedgerEntry(p NewWalletLedgerEntryParams) (WalletLedgerEntry, erro
 	}, nil
 }
 
-// RehydrateWalletLedgerEntryParams carries the exact persisted state of a
-// ledger entry, including its already-computed balanceAfter.
 type RehydrateWalletLedgerEntryParams struct {
 	ID            uuid.UUID
 	WalletID      uuid.UUID
@@ -98,10 +83,6 @@ type RehydrateWalletLedgerEntryParams struct {
 	CreatedAt     time.Time
 }
 
-// RehydrateWalletLedgerEntry reconstructs a persisted ledger entry. It
-// re-derives balanceAfter from BalanceBefore/Amount/Direction and compares
-// it against the persisted BalanceAfter — a cheap, pure re-verification
-// that catches storage-level corruption, not a replay of any side effect.
 func RehydrateWalletLedgerEntry(p RehydrateWalletLedgerEntryParams) (WalletLedgerEntry, error) {
 	expected, err := applyDirection(p.BalanceBefore, p.Amount, p.Direction)
 	if err != nil {

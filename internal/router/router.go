@@ -5,17 +5,12 @@ import (
 	"go.uber.org/fx"
 )
 
-// Route is anything that wants to be mounted on the gin engine. Feature
-// packages implement this and provide it through AsRoute so it lands in
-// the shared "routes" value group without router knowing about them.
 type Route interface {
 	Method() string
 	Pattern() string
 	Handler() gin.HandlerFunc
 }
 
-// AsRoute annotates a Route constructor so its result feeds the "routes"
-// value group consumed by Register.
 func AsRoute(f any) any {
 	return fx.Annotate(
 		f,
@@ -24,23 +19,52 @@ func AsRoute(f any) any {
 	)
 }
 
-// Params collects every Route registered across all feature modules.
+type Set struct {
+	Routes      []Route
+	Middlewares []gin.HandlerFunc
+}
+
+func AsRouteSet(f any) any {
+	return fx.Annotate(f, fx.ResultTags(`group:"routeSets"`))
+}
+
+func Simple(method, pattern string, handler gin.HandlerFunc) Route {
+	return simpleRoute{method: method, pattern: pattern, handler: handler}
+}
+
+type simpleRoute struct {
+	method  string
+	pattern string
+	handler gin.HandlerFunc
+}
+
+func (r simpleRoute) Method() string           { return r.method }
+func (r simpleRoute) Pattern() string          { return r.pattern }
+func (r simpleRoute) Handler() gin.HandlerFunc { return r.handler }
+
 type Params struct {
 	fx.In
 
-	Engine *gin.Engine
-	Routes []Route `group:"routes"`
+	Engine    *gin.Engine
+	Routes    []Route `group:"routes"`
+	RouteSets []Set   `group:"routeSets"`
 }
 
-// Register mounts every Route on the gin engine.
 func Register(p Params) {
 	for _, r := range p.Routes {
 		p.Engine.Handle(r.Method(), r.Pattern(), r.Handler())
 	}
+
+	for _, set := range p.RouteSets {
+		for _, r := range set.Routes {
+			handlers := make([]gin.HandlerFunc, 0, len(set.Middlewares)+1)
+			handlers = append(handlers, set.Middlewares...)
+			handlers = append(handlers, r.Handler())
+			p.Engine.Handle(r.Method(), r.Pattern(), handlers...)
+		}
+	}
 }
 
-// Module wires route registration into the fx graph. It must be composed
-// after every feature module that provides routes.
 var Module = fx.Module("router",
 	fx.Invoke(Register),
 )
