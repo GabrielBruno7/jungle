@@ -4,8 +4,6 @@ Serviço de carteira e ledger para provedores de jogos, em Go com Uber Fx. Ele m
 
 As operações entram por duas portas, a API HTTP e um consumidor SQS FIFO, e as duas executam o mesmo caso de uso. Ou seja: as garantias são iguais nos dois caminhos, não existe "o jeito rápido" e "o jeito certo".
 
-O porquê de cada decisão está em [ARCHITECTURE.md](ARCHITECTURE.md). Este arquivo é só o manual de uso.
-
 ## Subindo
 
 Precisa de Docker com Compose. Go 1.25 só é necessário se você for rodar testes ou a aplicação fora do container.
