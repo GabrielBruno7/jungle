@@ -421,4 +421,3 @@ deploy/            keycloak, localstack, prometheus, grafana, loadtest, postman
 docs/              o enunciado do desafio
 ```
 
-As limitações conhecidas e o que ficou de fora estão no §12 do ARCHITECTURE.md, listados sem maquiagem.
