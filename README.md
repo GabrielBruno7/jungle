@@ -2,8 +2,6 @@
 
 Serviço de carteira e ledger para provedores de jogos, em Go com Uber Fx. Ele movimenta o saldo dos jogadores a partir das operações que os provedores enviam (`BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK`) e registra cada movimento num ledger append-only.
 
-As operações entram por duas portas, a API HTTP e um consumidor SQS FIFO, e as duas executam o mesmo caso de uso. Ou seja: as garantias são iguais nos dois caminhos, não existe "o jeito rápido" e "o jeito certo".
-
 ## Subindo
 
 Precisa de Docker com Compose. Go 1.25.11 (a versão do `go.mod`) só é necessário se você for rodar os testes ou a aplicação fora do container.
